@@ -8,6 +8,7 @@ begin:		jp main
 
 main:	    di
             ld (DOSLine+1),ix
+            call SavePages
             ld hl,cur_dir
             ld c,curdir
             rst 10h
@@ -21,6 +22,9 @@ main:	    di
             ld c,scankey
             rst 10h
             jr z,.loop
+            ld a,(MemoryDescriptor)
+            call fmem
+            call RestorePages
             jp quit0
 
 ;[]==========================================================[]
@@ -54,8 +58,8 @@ DOSLine:	ld hl,0
             cp 2
             jp nc,FileTooBig
             ex af,af'
-            push hl
-            push ix
+            ;push hl
+            ;push ix
             push hl
             push ix
             ld ix,0
@@ -67,19 +71,37 @@ DOSLine:	ld hl,0
             pop hl
             call CalcNeedRam
             ld b,a
-            ld c,getmem
-            rst 10h
-            pop de
-            pop hl
+            ld c,a
+            ld (MemoryBlockLength),a
+            push bc
+            call gmem
+            pop bc
+            ;pop de
+            ;pop hl
             jp c,NotEnoughtMemory
             ld (MemoryDescriptor),a
 
 ;чтение файла
+            ld b,0
+.whileNotEOF:
+            ld a,(MemoryDescriptor)
+            push bc
+            call mem_setwin3
+;todo: отработать ошибку включения страницы
             ld hl,GifFile
+            ld de,4000h
             ld a,(GifHandle)
-            push af
             call read
-            pop af
+            pop bc
+            jp c,FileReadError
+            inc a           ;если FFh, то прочитана не вся порция, а значит достигли конца файла (?)
+            jr z,.endOfFile
+            inc b
+            dec c
+            jr nz,.whileNotEOF
+.endOfFile: ld a,(MemoryDescriptor)
+            ld b,0
+            call mem_setwin3
             call close
 ;Проверка формата            
             ld hl,GifFile
@@ -122,7 +144,12 @@ DOSLine:	ld hl,0
 
 PrintError:	ld c,pchars			;печатаем
             rst 10h
-            ld bc,0FF41h
+            call RestorePages
+            ld a,(MemoryDescriptor)
+            and a
+            jr z,.next
+            call fmem
+.next:      ld bc,0FF41h
             rst 10h
             jp $				; привычка...
 
@@ -146,6 +173,35 @@ Negative:
             pop hl
             scf
             ret
+
+;Сохранение номеров страниц при запуске
+SavePages:  ld hl, Pages
+            ld a,cpu_w0
+            call save_pg
+            inc hl
+            ld a,cpu_w1
+            call save_pg
+            inc hl
+            ld a,cpu_w2
+            call save_pg
+            inc hl
+            ld a,cpu_w3
+            jp save_pg
+
+;Восстановление номеров страниц при завершении
+RestorePages:
+            ld hl, Pages
+            ld a,cpu_w0
+            call restore_pg
+            inc hl
+            ld a,cpu_w1
+            call restore_pg
+            inc hl
+            ;ld a,cpu_w2
+            ;call save_pg
+            inc hl
+            ld a,cpu_w3
+            jp restore_pg
 
 ;Подсчет количества страниц, необходимых для загрузки изображения
 ;вход:
@@ -191,6 +247,10 @@ NotEnoughtMemory:
             ld hl,NotEnoughtMemoryMessage
     		jp PrintError
 
+FileReadError:
+            call RestorePages
+            jp rd_err
+
 FileTooBigMessage:
             db cr,lf,"Error: File too big!"
             db cr,lf,"This version hasn't supported yet files larger than 128kb",cr,lf
@@ -217,12 +277,21 @@ GifHandle:  db 0
 Gif87a:     db "GIF87a"
 Gif89a:     db "GIF89a"
 
+MemoryBlockLength:
+            db 0
 MemoryDescriptor:
             db 0
 ColorDensity:
             db 0
 GifImageBegin:
             dw 0
+
+;Страницы, которые были открыты при запуске программы
+Pages:
+Page0:      db 0
+Page1:      db 0
+Page2:      db 0
+Page3:      db 0
 
 cur_dir:	equ ($/80h)*80h+80h
 
